@@ -192,7 +192,7 @@ class EventResponder
             return;
         }
 
-        if (($event == 'Hold') || ($event == 'Unhold')) {
+/*        if (($event == 'Hold') || ($event == 'Unhold')) {
             $operator = $pbxEvtKeys['calleridnum'] ?? '';
             $callid = $pbxEvtKeys['uniqueid'] ?? '';
             //Logger::log("$operator $callid");
@@ -214,6 +214,7 @@ class EventResponder
 
             return;
         }
+*/
 
         if ($event == 'Hangup') {
             if (!$originatedCall) {
