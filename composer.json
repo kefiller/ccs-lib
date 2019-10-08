@@ -1,8 +1,0 @@
-{
-    "name" : "ccs-lib",
-    "description": "CCS Class Library",
-    "require": {
-        "clue/ami-react": "^0.4",
-        "marcelog/pami": "2.*"
-    }
-}
