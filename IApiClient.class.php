@@ -217,6 +217,23 @@ abstract class IApiClient
     }
 
     /** @return Result */
+    public function a2iCampaignsInfo(array $campaigns = [])
+    {
+        $this->req['method'] = 'a2i.campaigns.info';
+        $this->req['params'] = [ 'campaigns' => $campaigns, ];
+
+        $rslt = $this->request();
+        if ($rslt->error()) {
+            return $rslt;
+        }
+
+        if ($rslt->data()['response'] == 'success') {
+            return new ResultOK($rslt->data());
+        }
+        return new ResultError($rslt->data()['message']);
+    }
+
+    /** @return Result */
     public function a2iCampaignSettings(string $campaign)
     {
         if (!$campaign) {
@@ -238,7 +255,7 @@ abstract class IApiClient
     }
 
     /** @return Result */
-    public function a2iCampaignLog(string $campaign, string $dateFrom = '', string $dateTo = '')
+    public function a2iCampaignLog(string $campaign, string $dateFrom = '', string $dateTo = '', $limit = '')
     {
         if (!$campaign) {
             return new ResultError("Empty campaign");
@@ -247,9 +264,16 @@ abstract class IApiClient
         $this->req['method'] = 'a2i.campaign.log';
         $this->req['params'] = [ 'name' => $campaign, ];
 
-        if ($dateFrom && $dateTo) {
+        if ($dateFrom) {
             $this->req['params']['dateFrom'] = $dateFrom;
+        }
+
+        if ($dateTo) {
             $this->req['params']['dateTo'] = $dateTo;
+        }
+
+        if ($limit) {
+            $this->req['params']['limit'] = $limit;
         }
 
         $rslt = $this->request();

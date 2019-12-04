@@ -436,7 +436,7 @@ class A2ICampMgr
     }
 
     // Получает лог кампании $campaign
-    public function getLog($campaign, $dateFrom = null, $dateTo = null)
+    public function getLog($campaign, $dateFrom = '', $dateTo = '', $limit = '')
     {
         $campaign = $this->fixCampName($campaign);
 
@@ -450,11 +450,23 @@ class A2ICampMgr
         $sql = "select s_dt, s_number, s_def from $logTbl where s_campaign = '$campaign' ";
         if ($dateFrom) {
             $sql .= " and s_dt > '$dateFrom' ";
+        } else {
+            $sql .= " and s_dt > now()::date ";
         }
         if ($dateTo) {
             $sql .= " and s_dt < '$dateTo' ";
+        } else {
+            $sql .= " and s_dt < now() ";
         }
         $sql .= " order by s_dt ";
+
+        if ($limit) {
+            $sql .= " limit $limit ";
+        } else {
+            $sql .= " limit 1000 ";
+        }
+
+        echo "$sql\n";
 
         $ret = [];
         $rows = $this->db->query($sql);
@@ -485,6 +497,68 @@ class A2ICampMgr
         $ttsRec = $aNumber[$number]['x-tts-rec'];
 
         return new ResultOK($ttsRec);
+    }
+
+
+    /**
+     * Get info about specified campaigns
+     * */
+    public function getCampaignsInfo($campaigns)
+    {
+        if (!$campaigns) {
+            $campaigns = $this->list();
+        }
+
+        $sql = '';
+        foreach($campaigns as $idx => $camp) {
+            $union = $idx ? 'union' : '';
+            $sql .= "$union select '$camp' as campaign,
+                     (select coalesce(count(*),0) from a2i_campaign_$camp where s_type='number') as numbers_total,
+                     (select coalesce(count(*),0) from a2i_campaign_$camp where s_type='number' and s_def::json->>'x-finished' = 'true') as numbers_finished,
+                     (select coalesce(sum((s_def::json->>'x-tries-total')::int),0) from a2i_campaign_$camp where s_type='number') as calls_total,
+                     (select coalesce(sum((s_def::json->>'x-tries-success')::int),0) from a2i_campaign_$camp where s_type='number') as calls_success,
+                     s_def from a2i_campaign_$camp where s_type='status' ";
+        }
+
+        //file_put_contents('/tmp/1.txt', $sql);
+
+        $ret = [];
+        $rows = $this->db->query($sql);
+        foreach ($rows as $row) {
+            $campaign = $row['campaign'];
+            $numbers_total = $row['numbers_total'];
+            $numbers_finished = $row['numbers_finished'];
+            $calls_total = $row['calls_total'];
+            $calls_success = $row['calls_success'];
+
+            $campStatus = json_decode($row['s_def'], true);
+
+            if (!$campStatus) continue;
+
+            $campStatus['campaign'] = $campaign;
+            $campStatus['numbers_total'] = $numbers_total;
+            $campStatus['numbers_finished'] = $numbers_finished;
+            $campStatus['calls_total'] = $calls_total;
+            $campStatus['calls_success'] = $calls_success;
+
+            if ($calls_total) {
+                $campStatus['calls_success_percent'] = round($calls_success/$calls_total*100);
+            } else {
+                $campStatus['calls_success_percent'] = 0;
+            }
+
+            if ($numbers_total) {
+                $campStatus['campaign_progress_percent'] = round($numbers_finished/$numbers_total*100);
+                $campStatus['campaign_success_percent'] = round($calls_success/$numbers_total*100);
+            } else {
+                $campStatus['campaign_progress_percent'] = 0;
+                $campStatus['campaign_success_percent'] = 0;
+            }
+
+            $ret[$campaign] = $campStatus;
+        }
+
+        return $ret;
     }
 
     private function checkMandatoryKeys($mandatoryKeys, $keys)
