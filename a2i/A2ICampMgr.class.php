@@ -230,8 +230,8 @@ class A2ICampMgr
             return false;
         }
 
-        $this->db->query("drop table ".$campaign);
         $this->db->query("delete from a2i_campaigns where s_campaign='".$campaign."'");
+        $this->db->query("drop table ".$campaign);
         if ($this->logger) {
             $this->logger->log($campaign, "", ['type' => 'drop']);
         }

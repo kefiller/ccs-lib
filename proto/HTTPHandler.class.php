@@ -65,6 +65,8 @@ class HTTPHandler extends IProtoHandler
         // log request/answer
         $this->logReq($ansText);
 
+        $this->httpResponse->header('Access-Control-Allow-Origin', '*');
+
         // finish http request
         return $this->httpResponse->end($ansText);
     }
