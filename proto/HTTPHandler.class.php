@@ -83,7 +83,7 @@ class HTTPHandler extends IProtoHandler
         } else {
             $req = "";
         }
-        $trimReq = str_replace(["\r","\n"], "", $req);
+        $trimReq = substr(str_replace(["\r","\n"], "", $req), 0, 255);
         if ($this->logRequest) {
             $logStr = "REQUEST [$remoteAddr:$remotePort $method -> $host$reqUri $trimReq]";
             if ($this->logResponse) {
