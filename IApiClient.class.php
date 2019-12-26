@@ -395,6 +395,27 @@ abstract class IApiClient
     }
 
     /** @return Result */
+    public function a2iCampaignReport(string $campaign)
+    {
+        if (!$campaign) {
+            return new ResultError("Empty campaign");
+        }
+
+        $this->req['method'] = 'a2i.campaign.report';
+        $this->req['params'] = [ 'name' => $campaign, ];
+
+        $rslt = $this->request();
+        if ($rslt->error()) {
+            return $rslt;
+        }
+
+        if ($rslt->data()['response'] == 'success') {
+            return new ResultOK($rslt->data()['report']);
+        }
+        return new ResultError($rslt->data()['message']);
+    }
+
+    /** @return Result */
     public function callOriginate(array $destination, array $bridgeTarget, array $extraData = [])
     {
         if (!count($destination)) {

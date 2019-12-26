@@ -230,8 +230,12 @@ class A2ICampMgr
             return false;
         }
 
-        $this->db->query("delete from a2i_campaigns where s_campaign='".$campaign."'");
-        $this->db->query("drop table ".$campaign);
+        $sql = "START TRANSACTION;
+                delete from a2i_campaigns where s_campaign='".$campaign."';
+                drop table $campaign;
+                COMMIT;";
+
+        $this->db->query($sql);
         if ($this->logger) {
             $this->logger->log($campaign, "", ['type' => 'drop']);
         }
@@ -556,6 +560,33 @@ class A2ICampMgr
             }
 
             $ret[$campaign] = $campStatus;
+        }
+
+        return $ret;
+    }
+
+
+    /**
+     * Get info about specified campaigns
+     * */
+    public function getReport($campaignName)
+    {
+        $campaign = $this->fixCampName($campaignName);
+        $sql = "select
+            s_def::json->>'number' as number,
+            s_def::json->>'x-send-date' as send_date,
+            coalesce((s_def::json->>'x-billsec')::int, 0) as billsec,
+            s_def::json->>'x-finished' as finished,
+            s_def::json->>'x-tries-success' as tries_success,
+            s_def::json->>'x-tries-error' as tries_error
+        from $campaign where s_type='number'";
+
+//            s_def::json->>'x-send-status' as send_status,
+
+        $ret[] = ['number','send_date','billsec','finished','tries_success','tries_error'];
+        $rows = $this->db->query($sql);
+        foreach ($rows as $row) {
+            $ret[] = [$row['number'],$row['send_date'],$row['billsec'],$row['finished'],$row['tries_success'],$row['tries_error']];
         }
 
         return $ret;
