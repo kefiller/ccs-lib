@@ -5,19 +5,29 @@ namespace CCS\pbx;
 /** Provides interface to Event, being received from PBX */
 class PbxEvent
 {
-    /** @var \PAMI\Message\Event\EventMessage */
-    private $pamiEvent;
-
     /**
      * Server event was received from
      * @var string
      */
-    private $srvName = '';
+    private $srvName = 'unknown_srv';
 
-    public function __construct(\PAMI\Message\Event\EventMessage $pamiEvent, string $srvName)
+    /**
+     * Event's name
+     * @var string
+     */
+    private $name = 'unknown';
+
+    /**
+     * Event's keys
+     * @var string
+     */
+    private $keys = [];
+
+    public function __construct(string $srvName, string $eventName, array $keys)
     {
-        $this->pamiEvent = $pamiEvent;
         $this->srvName = $srvName;
+        $this->name = $eventName;
+        $this->keys = $keys;
     }
 
     /**
@@ -34,7 +44,7 @@ class PbxEvent
      */
     public function getName()
     {
-        return $this->pamiEvent->getName();
+        return $this->name;
     }
 
     /** Returns event's key/values pairs
@@ -42,6 +52,6 @@ class PbxEvent
      */
     public function getKeys()
     {
-        return $this->pamiEvent->getKeys();
+        return $this->keys;
     }
 }

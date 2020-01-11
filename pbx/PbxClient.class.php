@@ -57,7 +57,7 @@ class PbxClient
         $this->evtListenerId = $this->pamiClient->registerEventListener(
             function (\PAMI\Message\Event\EventMessage $event) {
                 $func = $this->evtListener;
-                $func(new PbxEvent($event, $this->name));
+                $func(new PbxEvent($this->name, $event->getName(), $event->getKeys()));
             }
         );
     }
@@ -109,9 +109,18 @@ class PbxClient
     {
         $channel = $destination->getChannel();
 
+        $keys = [];
+        $vars = [];
+
         $originateAction = new \PAMI\Message\Action\OriginateAction($channel);
+        $keys['action'] = 'Originate';
+        $keys['channel'] = $channel;
+
         $originateAction->setCallerId($destination->getCallerid());
+        $keys['callerid'] = $destination->getCallerid();
+
         $originateAction->setTimeout($destination->getTimeout()*1000); // To milliseconds
+        $keys['timeout'] = $destination->getTimeout()*1000; // To milliseconds
 
 /*
          if ($bridgeTarget->getType() == 'dialplan') {
@@ -128,27 +137,39 @@ class PbxClient
         foreach ($extraData as $k => $v) {
             if (substr(strtolower($k), 0, 4) == 'pbx-') {
                 $originateAction->setVariable($k, $v);
+                $vars[$k] = $v;
             }
         }
 
         $originateAction->setContext($this->originateContext);
+        $keys['context'] = $this->originateContext;
         // EXTEN will be set later
         $originateAction->setPriority("1");
+        $keys['priority'] = '1';
 
         $originateAction->setVariable('BRIDGE-TARGET', $bridgeTarget->getType());
+        $vars['BRIDGE-TARGET'] = $bridgeTarget->getType();
+
         if ($bridgeTarget->getType() == 'number') {
             $originateAction->setVariable('BRT-NUM', $bridgeTarget->getNumber());
+            $vars['BRT-NUM'] = $bridgeTarget->getNumber();
             $originateAction->setExtension($bridgeTarget->getNumber()); // set EXTEN to number
+            $keys['exten'] = $bridgeTarget->getNumber(); // set EXTEN to number
             if ($bridgeTarget->getCallerid()) {
                 $originateAction->setVariable('BRT-CLID', $bridgeTarget->getCallerid());
+                $vars['BRT-CLID'] = $bridgeTarget->getCallerid();
             }
         } elseif ($bridgeTarget->getType() == 'dialplan') {
             $originateAction->setVariable('BRT-CTX', $bridgeTarget->getContext());
+            $vars['BRT-CTX'] = $bridgeTarget->getContext();
             $originateAction->setVariable('BRT-EXTEN', $bridgeTarget->getExtension()); // set EXTEN to exten
+            $vars['BRT-EXTEN'] = $bridgeTarget->getExtension(); // set EXTEN to exten
             $originateAction->setExtension($bridgeTarget->getExtension());
+            $keys['exten'] = $bridgeTarget->getExtension();
         }
 
         $originateAction->setAsync(true);
+        $keys['async'] = 'true';
 
         // Create OriginatedCall
         $origCall = new OriginatedCall($destination, $bridgeTarget, $extraData);
@@ -158,9 +179,17 @@ class PbxClient
         $origCallsPool->add($origCall);
 
         $originateAction->setActionID($origCall->getId());
+        $keys['actionid'] = $origCall->getId();
+
         $originateAction->setVariable('API-CALL-ID', $origCall->getId());
+        $vars['API-CALL-ID'] = $origCall->getId();
 
         $this->pamiClient->send($originateAction);
+
+//        print_r($originateAction->getKeys());
+//        print_r($keys);
+//        print_r($originateAction->getVariables());
+//        print_r($vars);
 
         // Emit event
         $evtKeys = [];
