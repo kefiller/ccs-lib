@@ -34,8 +34,7 @@ class WebsocketHandler extends IProtoHandler
 
     public function process($frame)
     {
-        Logger::log("receive from {$frame->fd}:{$frame->data},opcode:{$frame->opcode},fin:{$frame->finish}");
-        //$this->wsServer->push($frame->fd, "pong: {$frame->data}");
+        //Logger::log("receive from {$frame->fd}:{$frame->data},opcode:{$frame->opcode},fin:{$frame->finish}");
 
         $oRequest = new Request($frame->data, $this);
         $oRequest->setClientID($frame->fd);

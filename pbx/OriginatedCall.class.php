@@ -36,9 +36,13 @@ class OriginatedCall
     */
     private $extraData;
 
-    public function __construct(OriginateTarget $destination, OriginateTarget $bridgeTarget, array $extraData = [])
+    public function __construct(OriginateTarget $destination, OriginateTarget $bridgeTarget, array $extraData = [], $callId = '')
     {
-        $this->id = _::guidv4();
+        if (!$callId) {
+            $this->id = _::guidv4();
+        } else {
+            $this->id = $callId;
+        }
         $this->statusUpdateTime = new DateTime();
         $this->status = 'created';
         $this->destination = $destination;

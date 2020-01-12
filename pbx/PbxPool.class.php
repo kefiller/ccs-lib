@@ -9,6 +9,14 @@ use CCS\Logger;
 
 use CCS\db\MyDB;
 
+use CCS\transport\MessageBus;
+use CCS\util\_;
+
+use CCS\Event;
+use CCS\pbx\PbxEvent;
+use CCS\EventEmitter;
+use CCS\EventResponder;
+
 /** Pool of PBX clients(singleton). Used as center point for receiving events from group of PBX servers,
  * and sending commands to whole PBX group.
  * */
@@ -16,18 +24,18 @@ use CCS\db\MyDB;
 class PbxPool
 {
     /** @var array */
-    private $connectOptions;
-
-    /**
-     * Array of PbxClient
-     * @var array */
-    private $pool;
-
-    /** @var callable|null */
-    private $evtListener = null;
+    private $servers;
 
     /** @var PbxPool */
     private static $instance = null;
+
+    /** Context, where to put originated calls
+    * @var string
+    */
+    private $originateContext = '';
+
+    /** Absolute call timeout (remove it from originatedCallsPool without conditions) */
+    private $callAbsTimeout = 1800; // seconds
 
     public static function getInstance()
     {
@@ -37,55 +45,18 @@ class PbxPool
         return self::$instance;
     }
 
-    /** Set connection params, init PBX pool*/
-    public function init(array $connectOptions, bool $autoConnect = true)
+    /** Configure PBX pool*/
+    public function init(array $config)
     {
-        $this->connectOptions = $connectOptions;
-        foreach ($this->connectOptions as $srvName => $connData) {
-            $pbxClient = new PbxClient($srvName, $connData, false);
-            $this->pool[$srvName] = [
-                'client' => $pbxClient,
-                'connected' => false,
-            ];
-        }
-        if ($autoConnect) {
-            $this->connectPool();
-        }
-    }
+        $this->servers = $config['servers'];
+        $this->originateContext = $config['originate-context'];
 
-    /** Connect to servers from pool
-     *
-     * @return void
-    */
-    public function connectPool(bool $force = false)
-    {
-        foreach ($this->pool as $srvName => $srvData) {
-            if ($srvData['connected'] && !$force) {
-                continue;
-            }
-            $this->tryConnectClient($srvName);
-        }
-    }
-
-    /** Process incoming messages and events from PBX pool */
-    public function processPool()
-    {
-        foreach ($this->pool as $srvName => $srvData) {
-            if (!$srvData['connected']) {
-                continue;
-            }
-            $ret = $this->processClient($srvName);
-            if ($ret->error()) {
-                Logger::log($srvName . " - processing error: " . $ret->data());
-                $this->scheduleReconnect($srvName);
-            }
-        }
-    }
-
-    /** Subscribe to events from PBX pool */
-    public function subscribe(callable $evtListener)
-    {
-        $this->evtListener = $evtListener;
+        // Subscribe for events from MessageBus
+        MessageBus::getInstance()->subscribe(function($evt)  {
+            $pbxEvent = new PbxEvent($evt['event'], $evt['srv'], $evt);
+            EventResponder::getInstance()->respond($pbxEvent);
+            //Logger::log($evt['srv'] . "->" . $evt['event']);
+        });
     }
 
     /**
@@ -133,26 +104,19 @@ class PbxPool
         }
 
         $poolResult = [];
-        foreach ($this->pool as $srvName => $srvData) {
-            if (!$srvData['connected']) {
-                continue;
-            }
-            $pbxClient = $srvData['client'];
-            assert($pbxClient instanceof PbxClient);
-
+        foreach ($this->servers as $srvName) {
             if (empty($targetPbxs) || in_array($srvName, $targetPbxs)) {
-                $result = $pbxClient->originate($oDst, $oBrt, $extraData);
-                $resultRecord = ['srv' => $srvName];
-                if ($result->error()) {
-                    //$poolResult[$srvName]  = ['error' => $result->errorDesc()];
-                    $resultRecord['result'] = 'error';
-                    $resultRecord['error']  =  $result->errorDesc();
-                } else {
-                    //$poolResult[$srvName] = ['success' => $result->data()];
-                    $resultRecord['result']  = 'success';
-                    $resultRecord['call-id'] = $result->data()['id'];
-                }
-                $poolResult[$srvName] = $resultRecord;
+                $originateAction = $this->buildOriginateAction($oDst, $oBrt, $extraData);
+                $callId = $originateAction['keys']['actionid'];
+                $this->command($originateAction, $srvName);
+                $this->storeCallInOriginatedPool($oDst, $oBrt, $extraData, $callId);
+                $this->emitOriginateInitEvent($oDst->getKeys(), $oBrt->getKeys(), $extraData, $callId);
+
+                $poolResult[$srvName] = [
+                    'srv' => $srvName,
+                    'result' => 'success',
+                    'call-id' => $callId,
+                ];
             }
         }
 
@@ -164,68 +128,107 @@ class PbxPool
     }
 
     /**
-     * Try to connect client with given $srvName
-     *
+     * Build 'originate' outgoing call action to $destination, connecting on answer to $bridgeTarget
      * @return Result
-     */
-    private function connectClient(string $srvName)
+     * */
+    private function buildOriginateAction(OriginateTarget $destination, OriginateTarget $bridgeTarget, array $extraData = [])
     {
-        $pbxClient = $this->pool[$srvName]['client'];
-        if ($this->evtListener) {
-            $pbxClient->subscribe($this->evtListener);
+        $channel = $destination->getChannel();
+
+        $keys = [];
+        $vars = [];
+
+        $keys['action'] = 'Originate';
+        $keys['channel'] = $channel;
+        $keys['callerid'] = $destination->getCallerid();
+        $keys['timeout'] = $destination->getTimeout()*1000; // To milliseconds
+
+        // Set pbx- variables from extraData
+        foreach ($extraData as $k => $v) {
+            if (substr(strtolower($k), 0, 4) == 'pbx-') {
+                $vars[$k] = $v;
+            }
         }
-        try {
-            $pbxClient->connect();
-        } catch (\Exception $e) {
-            $this->pool[$srvName]['connected'] = false;
-            return new ResultError($e->getMessage());
+
+        $keys['context'] = $this->originateContext;
+        // EXTEN will be set later
+        $keys['priority'] = '1';
+
+        $vars['BRIDGE-TARGET'] = $bridgeTarget->getType();
+
+        if ($bridgeTarget->getType() == 'number') {
+            $vars['BRT-NUM'] = $bridgeTarget->getNumber();
+            $keys['exten'] = $bridgeTarget->getNumber(); // set EXTEN to number
+            if ($bridgeTarget->getCallerid()) {
+                $vars['BRT-CLID'] = $bridgeTarget->getCallerid();
+            }
+        } elseif ($bridgeTarget->getType() == 'dialplan') {
+            $vars['BRT-CTX'] = $bridgeTarget->getContext();
+            $vars['BRT-EXTEN'] = $bridgeTarget->getExtension(); // set EXTEN to exten
+            $keys['exten'] = $bridgeTarget->getExtension();
         }
-        $this->pool[$srvName]['connected'] = true;
-        return new ResultOK();
+
+        $keys['async'] = 'true';
+
+        $callId = _::guidv4();
+
+        $keys['actionid'] = $callId;
+        $vars['API-CALL-ID'] = $callId;
+
+        return [
+            'action_type' => 'originate',
+            'keys' => $keys,
+            'vars' => $vars
+        ];
     }
 
-    private function tryConnectClient(string $srvName)
-    {
-        Logger::log($srvName . " - connecting ...");
-        $ret = $this->connectClient($srvName);
-        if ($ret->ok()) {
-            Logger::log($srvName . " - connection successfull");
-        } else {
-            Logger::log($srvName . " - connection error: " . $ret->data());
-            $this->scheduleReconnect($srvName);
-        }
-    }
-
-    /**
-     * Process incoming messages and events from PBX client with given $srvName
-     *
-     * @return Result
-    */
-    private function processClient($srvName)
-    {
-        $pbxClient = $this->pool[$srvName]['client'];
-        try {
-            $pbxClient->process();
-        } catch (\Exception $e) {
-            $this->pool[$srvName]['connected'] = false;
-            return new ResultError($e->getMessage());
-        }
-
-        return new ResultOK();
-    }
-
-    /**
-     * Schedule reconnection to given $srvName in few seconds in future
-     * Reconnection time is randomized in time range from 5 to 15 seconds
-     */
-    private function scheduleReconnect(string $srvName)
-    {
-        $reconnectSeconds = rand(5, 15);
-        Logger::log($srvName . " - scheduling reconnection in $reconnectSeconds seconds");
-        // @phan-suppress-next-line PhanUnusedClosureParameter,PhanUndeclaredClassMethod
-        swoole_timer_after($reconnectSeconds*1000, function () use ($srvName) {
-            $this->tryConnectClient($srvName);
+    /* Stores call in pool of originated calls for later monitoring */
+    private function storeCallInOriginatedPool(OriginateTarget $destination, OriginateTarget $bridgeTarget, array $extraData, string $callId) {
+        // Create OriginatedCall
+        $origCall = new OriginatedCall($destination, $bridgeTarget, $extraData, $callId);
+        $origCall->setStatus("originated");
+        $originatedCallsPool = OriginatedCallsPool::getInstance();
+        $originatedCallsPool->add($origCall);
+        // Force remove call from OriginatedPool after call timeout*2 (in case we loose OriginateResponse or whatever)
+        \swoole_timer_after($destination->getTimeout()*2*1000 /*to milliseconds*/, function() use ($originatedCallsPool, $callId) {
+            $origCall = $originatedCallsPool->get($callId);
+            if(!$origCall) {
+                //Logger::log("OriginatedCallsPool tracker - no call with id: '$callId' in pool, looks ok(already removed)");
+                return;
+            }
+            $uniqueId = $origCall->getUniqueid();
+            if($uniqueId) {
+                Logger::log("OriginatedCallsPool tracker - call with id: '$callId' found in pool with uniqueId:'$uniqueId', looks still talking, leave it");
+                // track and remove call after finally completed (in case lost Hangup event or whatever)
+                \swoole_timer_after($this->callAbsTimeout, function() use($originatedCallsPool, $callId) {
+                    Logger::log("OriginatedCallsPool tracker - final cleanup call id: '$callId'");
+                    $originatedCallsPool->delete($callId);
+                });
+                return;
+            }
+            Logger::log("OriginatedCallsPool tracker - call with id: '$callId' found in pool with no uniqueId, looks BAD, remove it");
+            $originatedCallsPool->delete($callId);
+            return;
         });
+    }
+
+    /*
+    * Send $action command to PBX. If $dst is empty, broadcast to all available PBX's
+    */
+    private function command($action, $dst = '') {
+        MessageBus::getInstance()->send($action, $dst);
+    }
+
+    /* Creates and emits 'originate.init' events to subscribed clients */
+    private function  emitOriginateInitEvent(array $dstKeys, array $bridgeTargetKeys, array $extraData, string $callId) {
+        $evtKeys = [];
+        $evtKeys['destination'] = $dstKeys;
+        $evtKeys['bridge-target'] = $bridgeTargetKeys;
+        $evtKeys['extra-data'] = $extraData;
+        $evtKeys['id'] = $callId;
+
+        $evt = new Event('originate.init', $evtKeys);
+        EventEmitter::getInstance()->emit($evt);
     }
 
     private function __clone()
