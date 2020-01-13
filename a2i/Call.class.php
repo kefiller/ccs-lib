@@ -108,6 +108,10 @@ class Call
             $this->_data['x-finished'] = 'false';               // флаг завершения обработки номера
             // флаг признака того, что по номеру в настоящий момент совершается звонок
             $this->_data['x-in-call'] = 'false';
+            // по звонку получен OriginateResponse (call-tracking)
+            $this->_data['x-originate-responded'] = false;
+            // Id таймера (call-tracking)
+            $this->_data['x-timer-id'] = 0;
         }
 
         $this->buildAggregatedSettings();
@@ -488,6 +492,27 @@ class Call
             return $aggrData[$field];
         }
         return '';
+    }
+
+    public function getId()
+    {
+        return $this->_data['x-msg-id'];
+    }
+
+    public function isOriginateResponded() {
+        return $this->_data['x-originate-responded'];
+    }
+
+    public function setOriginateResponded($originateResponded) {
+        $this->_data['x-originate-responded'] = $originateResponded;
+    }
+
+    public function setTimerId($timerId) {
+        $this->_data['x-timer-id'] = $timerId;
+    }
+
+    public function getTimerId() {
+        return $this->_data['x-timer-id'];
     }
 
     private function setLastError($str)

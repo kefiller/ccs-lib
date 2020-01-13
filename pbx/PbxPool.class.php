@@ -189,8 +189,8 @@ class PbxPool
         $origCall->setStatus("originated");
         $originatedCallsPool = OriginatedCallsPool::getInstance();
         $originatedCallsPool->add($origCall);
-        // Force remove call from OriginatedPool after call timeout*2 (in case we loose OriginateResponse or whatever)
-        \swoole_timer_after($destination->getTimeout()*2*1000 /*to milliseconds*/, function() use ($originatedCallsPool, $callId) {
+        // Force remove call from OriginatedPool after call timeout*1.2 (in case we loose OriginateResponse or whatever)
+        \swoole_timer_after($destination->getTimeout()*1.2*1000 /*to milliseconds*/, function() use ($originatedCallsPool, $callId) {
             $origCall = $originatedCallsPool->get($callId);
             if(!$origCall) {
                 //Logger::log("OriginatedCallsPool tracker - no call with id: '$callId' in pool, looks ok(already removed)");

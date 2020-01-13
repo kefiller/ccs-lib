@@ -3,6 +3,7 @@
 namespace CCS\a2i;
 
 use CCS\Logger;
+use CCS\HttpApiClient;
 use CCS\WebsocketApiClient;
 use CCS\TTSYaCloud;
 use CCS\util\_;
@@ -53,11 +54,16 @@ class Calld
     private $config;
 
     /**
-     * Api client
-     * @var WebsocketApiClient
+     * Websocket Api client
+     * @var IApiClient
      */
-    private $apiClient;
+    private $wsApiClient;
 
+    /**
+     * HTTP Api client
+     * @var IApiClient
+     */
+    private $httpApiClient;
 
     private $loopTimerId;
 
@@ -66,14 +72,16 @@ class Calld
         MyDB &$db,
         DBLogger $dbLogger,
         array $config,
-        WebsocketApiClient $apiClient
+        WebsocketApiClient $wsApiClient,
+        HttpApiClient $httpApiClient
     ) {
         $this->_campaign = $campaign;
         $this->_db = $db;
         $this->_dbLogger = $dbLogger;
 
         $this->config = $config;
-        $this->apiClient = $apiClient;
+        $this->wsApiClient = $wsApiClient;
+        $this->httpApiClient = $httpApiClient;
 
         $this->_status['status']   = 'running';
         $this->_status['hostname'] = gethostname();
@@ -85,7 +93,7 @@ class Calld
     {
         Logger::log("Daemon started");
 
-        $this->apiClient->onEvent(function ($event) {
+        $this->wsApiClient->onEvent(function ($event) {
             $this->evtListener($event);
         });
 
@@ -95,7 +103,7 @@ class Calld
 
         $evtKeys = [];
         $evtKeys['campaign'] = $this->_campaign;
-        $this->apiClient->eventsEmit($evtKeys, 'a2i.campaign.started');
+        $this->httpApiClient->eventsEmit($evtKeys, 'a2i.campaign.started');
     }
 
     private function evtListener($event)
@@ -127,7 +135,7 @@ class Calld
                 $this->_campSettings,
                 $this->config['X_SEND_TRIES_MAX'],
                 $this->config['X_SEND_TRIES_INTVL'],
-                $this->apiClient
+                $this->httpApiClient
             );
             if (!$call->deserialize()) {
                 Logger::log("Could not deserialize data for $number");
@@ -176,7 +184,7 @@ class Calld
 
             $evtKeys = $call->getData();
             $evtKeys['campaign'] = $call->getCampaign();
-            $this->apiClient->eventsEmit($evtKeys, 'a2i.originate.result');
+            $this->httpApiClient->eventsEmit($evtKeys, 'a2i.originate.result');
 
             return;
         }
@@ -208,7 +216,7 @@ class Calld
                 $this->_campSettings,
                 $this->config['X_SEND_TRIES_MAX'],
                 $this->config['X_SEND_TRIES_INTVL'],
-                $this->apiClient
+                $this->httpApiClient
             );
             if (!$call->deserialize()) {
                 Logger::log("Could not deserialize data for $number");
@@ -217,6 +225,12 @@ class Calld
 
             // Сохраним для лога
             $origCall = $call->getAggrData();
+
+            // Получили OriginateResponse (call tracking)
+            $call->setOriginateResponded(true);
+
+            // Отменим запланированный call-tracking, получили OriginateResponse
+            \swoole_timer_clear($call->getTimerId());
 
             Logger::log("$number: $response $reason $reasonDesc id '$apiCallId'");
 
@@ -238,7 +252,7 @@ class Calld
             $evtKeys['reason'] = $reason;
             $evtKeys['reason-desc'] = $reasonDesc;
 
-            $this->apiClient->eventsEmit($evtKeys, 'a2i.originate.response');
+            $this->httpApiClient->eventsEmit($evtKeys, 'a2i.originate.response');
 
             return;
         }
@@ -266,7 +280,7 @@ class Calld
                 $this->_campSettings,
                 $this->config['X_SEND_TRIES_MAX'],
                 $this->config['X_SEND_TRIES_INTVL'],
-                $this->apiClient
+                $this->httpApiClient
             );
             if (!$call->deserialize()) {
                 Logger::log("Could not deserialize data for $number");
@@ -312,7 +326,7 @@ class Calld
                 $this->_campSettings,
                 $this->config['X_SEND_TRIES_MAX'],
                 $this->config['X_SEND_TRIES_INTVL'],
-                $this->apiClient
+                $this->httpApiClient
             );
             if (!$call->deserialize()) {
                 Logger::log("$evtName: could not deserialize data for $number");
@@ -330,7 +344,7 @@ class Calld
                 }
             }
 
-            $this->apiClient->eventsEmit($evtKeys, "a2i.$evtName");
+            $this->httpApiClient->eventsEmit($evtKeys, "a2i.$evtName");
 
             return;
         }
@@ -438,7 +452,7 @@ class Calld
                 $this->_campSettings,
                 $this->config['X_SEND_TRIES_MAX'],
                 $this->config['X_SEND_TRIES_INTVL'],
-                $this->apiClient
+                $this->httpApiClient
             );
             if (!$call->deserialize()) {
                 Logger::log("Could not deserialize data for $sNumber");
@@ -554,6 +568,39 @@ class Calld
                     $this->_dbLogger->log($this->_campaign, $sNumber, ['type' => 'change', 'diff' => $diff,
                      'extra-fields' => $extraFields]);
                 }
+                $callId = $call->getId();
+                $timerId = \swoole_timer_after(60*1000 /*to milliseconds*/, function() use ($sNumber, $callId) {
+                    $call = new Call(
+                        $this->_db,
+                        $this->_campaign,
+                        $sNumber,
+                        $this->_campSettings,
+                        $this->config['X_SEND_TRIES_MAX'],
+                        $this->config['X_SEND_TRIES_INTVL'],
+                        $this->httpApiClient
+                    );
+                    if (!$call->deserialize()) {
+                        Logger::log("CallTracker: Could not deserialize data for $sNumber");
+                        return; // не получилось десериализовать
+                    }
+                    if ($call->getId() != $callId ) {
+                        Logger::log("CallTracker: $sNumber have another callId, skip");
+                        return;
+                    }
+                    if (!$call->inCall()) {
+                        Logger::log("CallTracker: $sNumber is not in call, looks good");
+                        return;
+                    }
+
+                    if ($call->isOriginateResponded()) {
+                        Logger::log("CallTracker: $sNumber isOriginateResponded, ok");
+                    }
+                    Logger::log("CallTracker: $sNumber in BAD state, fix");
+                    $call->setCallError();
+                    $call->setInCall(false);
+                    $call->serialize();
+                });
+                $call->setTimerId($timerId);
             }
 
             $call->serialize();
@@ -574,7 +621,7 @@ class Calld
         $evtKeys = [];
         $evtKeys['campaign'] = $this->_campaign;
         $evtKeys['reason'] = $sReason;
-        $this->apiClient->eventsEmit($evtKeys, 'a2i.campaign.stopped');
+        $this->httpApiClient->eventsEmit($evtKeys, 'a2i.campaign.stopped');
     }
 
     private function notifyEmail($msg)
@@ -626,7 +673,7 @@ class Calld
         // Instead of exit(0), ending all of swoole coroutines
         //@phan-suppress-next-line PhanUndeclaredFunction
         \swoole_timer_clear($this->loopTimerId);
-        $this->apiClient->disconnect();
+        $this->wsApiClient->disconnect();
     }
 
     /**
