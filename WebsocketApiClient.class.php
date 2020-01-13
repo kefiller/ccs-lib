@@ -29,7 +29,7 @@ class WebsocketApiClient extends IApiClient
     private $status = "";
 
     /** @var float */
-    private $timeout = 2.0;
+    private $timeout = 5.0;
 
     /** @var float */
     private $IOPollIntvl = 0.01;
