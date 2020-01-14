@@ -218,8 +218,10 @@ class EventResponder
 
         if ($event == 'Hangup') {
             if (!$originatedCall) {
+                Logger::log("not ours hangup " . $pbxEvtKeys['uniqueid']);
                 return;
             }
+            Logger::log("hangup " . $pbxEvtKeys['uniqueid']);
 
             $evtKeys['calleridnum'] = $pbxEvtKeys['calleridnum'];
             $evtKeys['calleridname'] = $pbxEvtKeys['calleridname'];

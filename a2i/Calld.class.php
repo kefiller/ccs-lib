@@ -235,7 +235,7 @@ class Calld
                 \swoole_timer_clear($timerId);
             }
 
-            Logger::log("$number: $response $reason $reasonDesc id '$apiCallId'");
+            Logger::log("$number: $response $reason $reasonDesc id '$apiCallId' uniqueid:" . $evtFields['uniqueid']);
 
             if ($response == "Failure") { // Call was not answered
                 $call->setCallError();
@@ -266,6 +266,8 @@ class Calld
             $apiCallId = $evtFields['id'];
 
             $campaign = $this->fixCampName($campaign);
+
+            Logger::log("originate.complete campaign:$campaign uniqueid:" . $evtFields['uniqueid']);
 
             if ($campaign !=  $this->_campaign) {
                 return;
