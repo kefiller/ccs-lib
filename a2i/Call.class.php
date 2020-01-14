@@ -500,7 +500,7 @@ class Call
     }
 
     public function isOriginateResponded() {
-        return $this->_data['x-originate-responded'];
+        return ($this->_data['x-originate-responded'] ?? false);
     }
 
     public function setOriginateResponded($originateResponded) {
@@ -512,7 +512,7 @@ class Call
     }
 
     public function getTimerId() {
-        return $this->_data['x-timer-id'];
+        return ($this->_data['x-timer-id'] ?? 0);
     }
 
     private function setLastError($str)

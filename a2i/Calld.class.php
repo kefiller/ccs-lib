@@ -230,7 +230,10 @@ class Calld
             $call->setOriginateResponded(true);
 
             // Отменим запланированный call-tracking, получили OriginateResponse
-            \swoole_timer_clear($call->getTimerId());
+            $timerId = $call->getTimerId();
+            if ($timerId) {
+                \swoole_timer_clear($timerId);
+            }
 
             Logger::log("$number: $response $reason $reasonDesc id '$apiCallId'");
 
