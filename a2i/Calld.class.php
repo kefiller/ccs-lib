@@ -173,6 +173,7 @@ class Calld
             }
             $call->setCallID($callid); // call uniqueid
             $call->setCallRec($callRec); // path to call record
+            $call->setInCall(false);
 
             $call->serialize();
             $diff = $call->getDiff($origCall);
@@ -229,11 +230,11 @@ class Calld
             // Получили OriginateResponse (call tracking)
             $call->setOriginateResponded(true);
 
-            // Отменим запланированный call-tracking, получили OriginateResponse
-            $timerId = $call->getTimerId();
-            if ($timerId) {
-                \swoole_timer_clear($timerId);
-            }
+//            // Отменим запланированный call-tracking, получили OriginateResponse
+//            $timerId = $call->getTimerId();
+//            if ($timerId) {
+//                \swoole_timer_clear($timerId);
+//            }
 
             Logger::log("$number: $response $reason $reasonDesc id '$apiCallId' uniqueid:" . ($evtFields['uniqueid'] ?? ''));
 
@@ -573,8 +574,9 @@ class Calld
                     $this->_dbLogger->log($this->_campaign, $sNumber, ['type' => 'change', 'diff' => $diff,
                      'extra-fields' => $extraFields]);
                 }
+/*
                 $callId = $call->getId();
-                $timerId = \swoole_timer_after(60*1000 /*to milliseconds*/, function() use ($sNumber, $callId) {
+                $timerId = \swoole_timer_after(60*1000, function() use ($sNumber, $callId) {
                     $call = new Call(
                         $this->_db,
                         $this->_campaign,
@@ -606,6 +608,7 @@ class Calld
                     $call->serialize();
                 });
                 $call->setTimerId($timerId);
+*/
             }
 
             $call->serialize();
