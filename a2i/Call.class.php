@@ -95,11 +95,6 @@ class Call
             $this->_data['x-send-date'] = $this->_zTimeStamp;   // дата последней попытки отправки звонка
             $this->_data['x-send-status'] = "";                 // статус последней отправки звонка
             $this->_data['x-msg-id'] = "";                      // ActionID звонка из последней отправки
-            // кол-во попыток проверки статуса. Если больше X_SEND_STATUS_CHECK_TRIES_MAX
-            // статус последней отправки звонка выставляется в ошибочный.
-            $this->_data['x-send-status-check-tries'] = 0;
-            // дата последней проверки статуса отправки звонка
-            $this->_data['x-send-status-check-date'] = $this->_zTimeStamp;
             // кол-во попыток отправки звонка(в систему доставки). Если больше
             // X_SEND_TRIES_MAX, увеличивается кол-во (+неудачных) попыток отправки,
             // статус последней отправки выставляется в ошибочный.
@@ -110,8 +105,6 @@ class Call
             $this->_data['x-in-call'] = 'false';
             // по звонку получен OriginateResponse (call-tracking)
             $this->_data['x-originate-responded'] = false;
-            // Id таймера (call-tracking)
-            $this->_data['x-timer-id'] = 0;
         }
 
         $this->buildAggregatedSettings();
@@ -162,66 +155,6 @@ class Call
         return $this->_data['x-send-tries'];
     }
 
-    /*
-        public function checkSendStatus() {
-            // мы не превысили кол-во повторных запросов статуса сообщения
-            if ($this->_data['x-send-status-check-tries'] < $CFG['X_SEND_STATUS_CHECK_TRIES_MAX']) {
-                // сколько прошло времени с момента последней проверки статуса
-
-                // Текущие дата и время
-                $dtNow = date($this->_dtFormat);
-
-                // Unixtime
-                $tmNow = strtotime($dtNow);
-
-                // Время последней отправки
-                $tmLastCheck = strtotime($this->_data['x-send-status-check-date']);
-
-                // Интервал между последней отправкой
-                $tmDiff = $tmNow - $tmLastCheck;
-
-                if ($tmDiff < $CFG['X_SEND_STATUS_CHECK_INTVL']) {
-                    // прошло меньше времени, чем заданный интервал проверки статуса
-                    $this->setLastError("check interval not finished");
-                    return $this->_data['x-send-status'];
-                }
-
-                // запросим статус доставки сообщения
-                $msgStatus = $this->_smsSender->getMessageStatus($this->_data['x-msg-id']);
-
-                //обновим время последней отправки
-                $this->_data['x-send-status-check-date'] = $dtNow;
-
-                if (!$msgStatus) { // ошибка запроса статуса
-                    $this->setLastError($this->_smsSender->getLastError()); // уточним ошибку
-                    $this->_data['x-send-status-check-tries']++; // и обновим счетчик запросов
-                    return false;
-                }
-
-                $this->_data['x-send-status'] = $msgStatus;
-                $this->_data['x-send-status-check-tries']++; // и обновим счетчик запросов
-
-                if ($this->_data['x-send-status'] == 'success') {     // сообщение было успешно доставлено
-                    $this->_data['x-tries-success']++;
-                    $this->_data['x-send-status-check-tries'] = 0; // обнулим счетчит запроса статуса
-                    // обнулим время последнего запроса статуса
-                    $this->_data['x-send-status-check-date'] = $this->_zTimeStamp;
-                } elseif ($this->_data['x-send-status'] == 'error') { // сообщение не было успешно доставлено
-                    $this->_data['x-tries-error']++;
-                    $this->_data['x-send-status-check-tries'] = 0; // обнулим счетчит запроса статуса
-                    // обнулим время последнего запроса статуса
-                    $this->_data['x-send-status-check-date'] = $this->_zTimeStamp;
-                } // else queued
-                return $this->_data['x-send-status'];
-            }
-            // cannot leave queued status, mark as error
-            $this->_data['x-send-status'] = 'error';
-            $this->_data['x-tries-error']++;
-            $this->_data['x-send-status-check-tries'] = 0; // обнулим счетчит запроса статуса
-            $this->_data['x-send-status-check-date'] = $this->_zTimeStamp; // обнулим время последнего запроса статуса
-            return $this->_data['x-send-status'];
-        }
-    */
     public function getDiff($data)
     {
         $this->buildAggregatedSettings();
@@ -505,14 +438,6 @@ class Call
 
     public function setOriginateResponded($originateResponded) {
         $this->_data['x-originate-responded'] = $originateResponded;
-    }
-
-    public function setTimerId($timerId) {
-        $this->_data['x-timer-id'] = $timerId;
-    }
-
-    public function getTimerId() {
-        return ($this->_data['x-timer-id'] ?? 0);
     }
 
     private function setLastError($str)

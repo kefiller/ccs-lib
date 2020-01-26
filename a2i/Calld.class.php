@@ -65,7 +65,20 @@ class Calld
      */
     private $httpApiClient;
 
+    /**
+     * swoole timer id for loop function periodic call
+     * @var string */
     private $loopTimerId;
+
+    /**
+     * If no originateRespone received during time interval, mark call as error
+     * @var string */
+    private $originateExpiredInterval = '50 seconds';
+
+    /**
+     * If call still not finished during time interval, mark call as error
+     * @var string */
+    private $totalTimeInterval = '10 minutes';
 
     public function __construct(
         string $campaign,
@@ -173,7 +186,7 @@ class Calld
             }
             $call->setCallID($callid); // call uniqueid
             $call->setCallRec($callRec); // path to call record
-            $call->setInCall(false);
+            //$call->setInCall(false);  Call may go to queue, etc
 
             $call->serialize();
             $diff = $call->getDiff($origCall);
@@ -229,12 +242,6 @@ class Calld
 
             // Получили OriginateResponse (call tracking)
             $call->setOriginateResponded(true);
-
-//            // Отменим запланированный call-tracking, получили OriginateResponse
-//            $timerId = $call->getTimerId();
-//            if ($timerId) {
-//                \swoole_timer_clear($timerId);
-//            }
 
             Logger::log("$number: $response $reason $reasonDesc id '$apiCallId' uniqueid:" . ($evtFields['uniqueid'] ?? ''));
 
@@ -406,19 +413,6 @@ class Calld
             $this->quit();
         }
 
-        // Есть ли номера, работа с которыми еще не завершена
-        $sql = "select s_name from ".$this->_campaign." where s_type = 'number'
-            and case when (s_def::json->>'x-finished') is not NULL then s_def::json->>'x-finished' <> 'true'
-            else true end";
-
-        $rows = $this->_db->query($sql);
-
-        // Если таких номеров нет, завершаем кампанию (или можно выполнить действие по настройкам кампании)
-        if (count($rows) == 0) {
-            $this->stop("No numbers left for processing");
-            return;
-        }
-
         $checker = new MsgChecker($this->_campSettings);
 
         // Проверить, не истек ли срок действия кампании
@@ -427,194 +421,211 @@ class Calld
             return;
         }
 
-        // По каждому номеру:
-        foreach ($rows as $row) {
-            // Определим, есть ли свободные каналы для совершения звонков
-            $sql = "select count(*) from ".$this->_campaign." where s_type = 'number'
-             and s_def::json->>'x-in-call' = 'true'";
-            $rows = $this->_db->query($sql);
+        // Есть ли номера, работа с которыми еще не завершена
+        $sql = "select count(*) from ".$this->_campaign." where s_type = 'number'
+            and case when (s_def::json->>'x-finished') is not NULL then s_def::json->>'x-finished' <> 'true'
+            else true end";
 
-            if ($rows[0]['count'] >= $this->_campSettings['channels']) {
-                if (!$this->_bNoFreeChannelsMsgShown) {
-                    Logger::log("All available channels occupied");
-                    $this->_bNoFreeChannelsMsgShown = true;
-                }
-                $this->updateStatus($sNumber);
-                return;
-            } else {
-                $this->_bNoFreeChannelsMsgShown = false;
-            }
+        $rows = $this->_db->query($sql);
 
-            // Вытащим очередной номер
-            if (!isset($row['s_name']) || $row['s_name'] == '') {
-                continue;
-            }
-            $sNumber = $row['s_name'];
-
-            $call = new Call(
-                $this->_db,
-                $this->_campaign,
-                $sNumber,
-                $this->_campSettings,
-                $this->config['X_SEND_TRIES_MAX'],
-                $this->config['X_SEND_TRIES_INTVL'],
-                $this->httpApiClient
-            );
-            if (!$call->deserialize()) {
-                Logger::log("Could not deserialize data for $sNumber");
-                continue; // не получилось десериализовать
-            }
-
-            // Если в разговоре
-            if ($call->inCall()) {
-                //Logger::log("$sNumber still in call");
-                // TODO Потом надо запросить данные у callMaker'а, действительно ли там торчит этот звонок...
-                continue;
-            }
-
-            // Сохраним для лога
-            $origCall = $call->getAggrData();
-
-            // place to generate TTS
-            $ttsGenMode = $this->_campSettings['tts-generate'];
-            if ($ttsGenMode == 'on-call') { // (for now) do not know, how to handle other types...
-                // extract TTS settings from campaign settings to $ttsConfig
-                $ttsConfig = [];
-                foreach ($this->_campSettings as $k => $v) {
-                    if (substr($k, 0, 4) == 'tts-') { // TTS related
-                        $ttsKey = substr($k, 4);
-                        $ttsConfig[$ttsKey] = $v;
-                    }
-                }
-                // Create and generate message with given config
-                try {
-                    $tts = new TTSYaCloud($call->getMessage(), $this->config['tts'], $ttsConfig);
-                } catch (\Exception $e) {
-                    Logger::log("Exception generating TTS for $sNumber:" . $e->getMessage());
-                    continue;
-                }
-                $rslt = $tts->get();
-                if ($rslt->error()) {
-                    Logger::log("Could not generate TTS for $sNumber:" . $rslt->errorDesc());
-                    continue;
-                }
-                $call->setTTS($tts->getRecTailName());
-                //Logger::log("Generated TTS for $sNumber:" . $rslt->data());
-            }
-
-            $checker->set($call->getAggrData());
-
-            // Проверить, успешно ли мы доставили все необходимые сообщения
-            if ($checker->checkTriesSuccess()) { // пометим номер как завершенный
-                $call->finish();
-                $call->serialize();
-                $diff = $call->getDiff($origCall);
-                if (count($diff)) {
-                    $extraFields = $this->getLogExtraFields($call);
-                    $this->_dbLogger->log($this->_campaign, $sNumber, ['type' => 'change', 'diff' => $diff,
-                     'extra-fields' => $extraFields]);
-                }
-                Logger::log("$sNumber : marked as finished(success)");
-                $this->updateStatus($sNumber);
-                continue;
-            }
-
-            // Не превысили ли мы лимиты на отправку ообщений(общее кол-во попыток)
-            if ($checker->checkTriesTotal()) {
-                // пометим номер как завершенный
-                $call->finish();
-                $call->serialize();
-                $diff = $call->getDiff($origCall);
-                if (count($diff)) {
-                    $extraFields = $this->getLogExtraFields($call);
-                    $this->_dbLogger->log($this->_campaign, $sNumber, ['type' => 'change', 'diff' => $diff,
-                     'extra-fields' => $extraFields]);
-                }
-                Logger::log("$sNumber : marked as finished(all tries left)");
-                $this->updateStatus($sNumber);
-                continue;
-            }
-
-            // Что-то еще надо делать...
-
-            // Проверить возможность совершения действий (интервал рабочего времени кампании)
-            if (!$checker->checkWorkTime()) {
-                $numNotWorkTimeMsgShown = $this->_bNotWorkTimeMsgShown[$sNumber] ?? false;
-                if (!$numNotWorkTimeMsgShown) {
-                    Logger::log("$sNumber : not work time");
-                    $this->_bNotWorkTimeMsgShown[$sNumber] = true;
-                }
-                $this->updateStatus($sNumber);
-                continue;
-            } else {
-                $this->_bNotWorkTimeMsgShown[$sNumber] = false;
-            }
-
-            // Проверить интервал отправки звонка (в случае последней успешной и неуспешной доставки)
-            if (!$checker->checkSendInterval()) {
-                //Logger::log("$sNumber : time interval not reached");
-                $this->updateStatus($sNumber);
-                continue;
-            }
-
-            // Пытаемся отправить звонок
-            Logger::log("$sNumber : calling to provider");
-            if (!$call->send()) {
-                if ($call->getLastError() != 'send interval not finished') {
-                    Logger::log("$sNumber : couldn't send call to delivery service, try ".$call->getSendTries()
-                    .", reason: '".$call->getLastError()."',  will retry later");
-                }
-            } else {
-                //if ($call->getSendStatus() != '') {
-                //    Logger::log("$sNumber(sent to delivery service): callStatus -> ".$call->getSendStatus());
-                //}
-                $diff = $call->getDiff($origCall);
-                if (count($diff)) {
-                    $extraFields = $this->getLogExtraFields($call);
-                    $this->_dbLogger->log($this->_campaign, $sNumber, ['type' => 'change', 'diff' => $diff,
-                     'extra-fields' => $extraFields]);
-                }
-/*
-                $callId = $call->getId();
-                $timerId = \swoole_timer_after(60*1000, function() use ($sNumber, $callId) {
-                    $call = new Call(
-                        $this->_db,
-                        $this->_campaign,
-                        $sNumber,
-                        $this->_campSettings,
-                        $this->config['X_SEND_TRIES_MAX'],
-                        $this->config['X_SEND_TRIES_INTVL'],
-                        $this->httpApiClient
-                    );
-                    if (!$call->deserialize()) {
-                        Logger::log("CallTracker: Could not deserialize data for $sNumber");
-                        return; // не получилось десериализовать
-                    }
-                    if ($call->getId() != $callId ) {
-                        Logger::log("CallTracker: $sNumber have another callId, skip");
-                        return;
-                    }
-                    if (!$call->inCall()) {
-                        Logger::log("CallTracker: $sNumber is not in call, looks good");
-                        return;
-                    }
-
-                    if ($call->isOriginateResponded()) {
-                        Logger::log("CallTracker: $sNumber isOriginateResponded, ok");
-                    }
-                    Logger::log("CallTracker: $sNumber in BAD state, fix");
-                    $call->setCallError();
-                    $call->setInCall(false);
-                    $call->serialize();
-                });
-                $call->setTimerId($timerId);
-*/
-            }
-
-            $call->serialize();
-            $this->updateStatus($sNumber);
+        // Если таких номеров нет, завершаем кампанию (или можно выполнить действие по настройкам кампании)
+        if ($rows[0]['count'] == 0) {
+            $this->stop("No numbers left for processing");
+            return;
         }
-        usleep(200);
+
+        // Определим, есть ли свободные каналы для совершения звонков
+        $sql = "select s_name,
+         s_def::json->>'x-originate-responded' as originate_responded,
+         now() - (s_def::json->>'x-send-date')::timestamp > '{$this->originateExpiredInterval}'::interval as originate_expired,
+         now() - (s_def::json->>'x-send-date')::timestamp > '{$this->totalTimeInterval}'::interval as total_time_expired
+         from ".$this->_campaign." where s_type = 'number'
+         and s_def::json->>'x-in-call' = 'true'";
+
+        $rows = $this->_db->query($sql);
+
+        // Проверим все звонки в статусе "в разговоре"
+        foreach($rows as $row) {
+            $sNumber = $row['s_name'];
+            $originateResponded = $row['originate_responded'];
+            $originateExpired = $row['originate_expired'];
+            $totalTimeExpired = $row['total_time_expired'];
+
+            if ( ($originateResponded === 'false' and $originateExpired === 't') or $totalTimeExpired === 't') {
+                Logger::log("got bad in-call call: sNumber:$sNumber, originateResponded:$originateResponded, originateExpired:$originateExpired, totalTimeExpired:$totalTimeExpired");
+                $call = new Call(
+                    $this->_db,
+                    $this->_campaign,
+                    $sNumber,
+                    $this->_campSettings,
+                    $this->config['X_SEND_TRIES_MAX'],
+                    $this->config['X_SEND_TRIES_INTVL'],
+                    $this->httpApiClient
+                );
+                if (!$call->deserialize()) {
+                    Logger::log("Could not deserialize data for $sNumber (in-call check)");
+                    return; // не получилось десериализовать
+                }
+                // Сохраним для лога
+                $origCall = $call->getAggrData();
+
+                $call->setCallError();
+                $call->setInCall(false);
+
+                $diff = $call->getDiff($origCall);
+                if (count($diff)) {
+                    $extraFields = $this->getLogExtraFields($call);
+                    $this->_dbLogger->log($this->_campaign, $sNumber, ['type' => 'change', 'diff' => $diff,
+                     'extra-fields' => $extraFields]);
+                }
+
+                $call->serialize();
+            }
+        }
+
+        if (count($rows) >= $this->_campSettings['channels']) {
+            if (!$this->_bNoFreeChannelsMsgShown) {
+                Logger::log("All available channels occupied");
+                $this->_bNoFreeChannelsMsgShown = true;
+            }
+            $this->updateStatus($sNumber);
+            return;
+        }
+        $this->_bNoFreeChannelsMsgShown = false;
+
+        // Вытащим очередной номер
+        $sql = "select s_name from ".$this->_campaign." where s_type = 'number'
+            and case when (s_def::json->>'x-finished') is not NULL then s_def::json->>'x-finished' <> 'true'
+            else true end
+            and coalesce(s_def::json->>'x-in-call', '') <> 'true'
+        limit 1";
+
+        $rows = $this->_db->query($sql);
+
+        if (!count($rows)) {
+            //Logger::log("no free numbers at this point. Maybe all are in-call?");
+            return;
+        }
+
+        $sNumber = $rows[0]['s_name'] ?? '';
+
+        $call = new Call(
+            $this->_db,
+            $this->_campaign,
+            $sNumber,
+            $this->_campSettings,
+            $this->config['X_SEND_TRIES_MAX'],
+            $this->config['X_SEND_TRIES_INTVL'],
+            $this->httpApiClient
+        );
+
+        if (!$call->deserialize()) {
+            Logger::log("Could not deserialize data for $sNumber");
+            return; // не получилось десериализовать
+        }
+
+        // Сохраним для лога
+        $origCall = $call->getAggrData();
+
+        // place to generate TTS
+        $ttsGenMode = $this->_campSettings['tts-generate'];
+        if ($ttsGenMode == 'on-call') { // (for now) do not know, how to handle other types...
+            // extract TTS settings from campaign settings to $ttsConfig
+            $ttsConfig = [];
+            foreach ($this->_campSettings as $k => $v) {
+                if (substr($k, 0, 4) == 'tts-') { // TTS related
+                    $ttsKey = substr($k, 4);
+                    $ttsConfig[$ttsKey] = $v;
+                }
+            }
+            // Create and generate message with given config
+            try {
+                $tts = new TTSYaCloud($call->getMessage(), $this->config['tts'], $ttsConfig);
+            } catch (\Exception $e) {
+                Logger::log("Exception generating TTS for $sNumber:" . $e->getMessage());
+                return;
+            }
+            $rslt = $tts->get();
+            if ($rslt->error()) {
+                Logger::log("Could not generate TTS for $sNumber:" . $rslt->errorDesc());
+                return;
+            }
+            $call->setTTS($tts->getRecTailName());
+            //Logger::log("Generated TTS for $sNumber:" . $rslt->data());
+        }
+
+        $checker->set($call->getAggrData());
+
+        // Проверить, успешно ли мы доставили все необходимые сообщения
+        if ($checker->checkTriesSuccess()) { // пометим номер как завершенный
+            $call->finish();
+            $call->serialize();
+            $diff = $call->getDiff($origCall);
+            if (count($diff)) {
+                $extraFields = $this->getLogExtraFields($call);
+                $this->_dbLogger->log($this->_campaign, $sNumber, ['type' => 'change', 'diff' => $diff,
+                 'extra-fields' => $extraFields]);
+            }
+            Logger::log("$sNumber : marked as finished(success)");
+            $this->updateStatus($sNumber);
+            return;
+        }
+
+        // Не превысили ли мы лимиты на отправку ообщений(общее кол-во попыток)
+        if ($checker->checkTriesTotal()) {
+            // пометим номер как завершенный
+            $call->finish();
+            $call->serialize();
+            $diff = $call->getDiff($origCall);
+            if (count($diff)) {
+                $extraFields = $this->getLogExtraFields($call);
+                $this->_dbLogger->log($this->_campaign, $sNumber, ['type' => 'change', 'diff' => $diff,
+                 'extra-fields' => $extraFields]);
+            }
+            Logger::log("$sNumber : marked as finished(all tries left)");
+            $this->updateStatus($sNumber);
+            return;
+        }
+
+        // Что-то еще надо делать...
+
+        // Проверить возможность совершения действий (интервал рабочего времени кампании)
+        if (!$checker->checkWorkTime()) {
+            $numNotWorkTimeMsgShown = $this->_bNotWorkTimeMsgShown[$sNumber] ?? false;
+            if (!$numNotWorkTimeMsgShown) {
+                Logger::log("$sNumber : not work time");
+                $this->_bNotWorkTimeMsgShown[$sNumber] = true;
+            }
+            $this->updateStatus($sNumber);
+            return;
+        }
+        $this->_bNotWorkTimeMsgShown[$sNumber] = false;
+
+        // Проверить интервал отправки звонка (в случае последней успешной и неуспешной доставки)
+        if (!$checker->checkSendInterval()) {
+            //Logger::log("$sNumber : time interval not reached");
+            $this->updateStatus($sNumber);
+            return;
+        }
+
+        // Пытаемся отправить звонок
+        Logger::log("$sNumber : calling to provider");
+        if (!$call->send()) {
+            if ($call->getLastError() != 'send interval not finished') {
+                Logger::log("$sNumber : couldn't send call to delivery service, try ".$call->getSendTries()
+                .", reason: '".$call->getLastError()."',  will retry later");
+            }
+        } else {
+            $diff = $call->getDiff($origCall);
+            if (count($diff)) {
+                $extraFields = $this->getLogExtraFields($call);
+                $this->_dbLogger->log($this->_campaign, $sNumber, ['type' => 'change', 'diff' => $diff,
+                 'extra-fields' => $extraFields]);
+            }
+        }
+
+        $call->serialize();
+        $this->updateStatus($sNumber);
     }
 
     public function stop($sReason)
