@@ -507,14 +507,17 @@ class A2ICampMgr
     /**
      * Get info about specified campaigns
      * */
-    public function getCampaignsInfo($campaigns)
+    public function getCampaignsInfo(array $campaigns)
     {
-        if (!$campaigns) {
-            $campaigns = $this->list();
-        }
+        $allCampaigns = $this->list();
+
+        $reqCampaigns = count($campaigns) ? $campaigns : $allCampaigns;
+
+        // Filter out only existing campaigns
+        $existingCampaigns = array_intersect($allCampaigns, $reqCampaigns);
 
         $sql = '';
-        foreach($campaigns as $idx => $camp) {
+        foreach($existingCampaigns as $idx => $camp) {
             $union = $idx ? 'union' : '';
             $sql .= "$union select '$camp' as campaign,
                      (select coalesce(count(*),0) from a2i_campaign_$camp where s_type='number') as numbers_total,
