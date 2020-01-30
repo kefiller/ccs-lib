@@ -581,8 +581,7 @@ class Calld
             s_def::json->>'x-in-call' as in_call
             from ".$this->_campaign." where s_type = 'number'
             and case when (s_def::json->>'x-finished') is not NULL then s_def::json->>'x-finished' <> 'true'
-            else true end
-            and coalesce(s_def::json->>'x-in-call', '') <> 'true'";
+            else true end";
 
         return $this->_db->query($sql);
     }
