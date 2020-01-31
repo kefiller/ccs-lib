@@ -5,6 +5,7 @@ namespace CCS;
 use CCS\pbx\PbxEvent;
 use CCS\pbx\OriginatedCallsPool;
 use CCS\db\MyDB;
+use CCS\Logger;
 
 class EventResponder
 {
@@ -29,7 +30,6 @@ class EventResponder
     {
         // emit unchanged PBX event
         $pbxEvtKeys = $pbxEvt->getKeys();
-        $pbxEvtKeys['srv'] = $pbxEvt->getSrvName();
 
         $apiPbxEvt = new Event('pbx.event', $pbxEvtKeys);
         $evtEmitter = EventEmitter::getInstance();

@@ -53,9 +53,8 @@ class PbxPool
 
         // Subscribe for events from MessageBus
         MessageBus::getInstance()->subscribe(function($evt)  {
-            $pbxEvent = new PbxEvent($evt['event'], $evt['srv'], $evt);
+            $pbxEvent = new PbxEvent($evt['srv'], $evt['event'], $evt);
             EventResponder::getInstance()->respond($pbxEvent);
-            //Logger::log($evt['srv'] . "->" . $evt['event']);
         });
     }
 
