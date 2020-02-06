@@ -1,0 +1,10 @@
+{
+	"folders": [
+		{
+			"path": "D:\\projects\\ccs-lib"
+		}
+	],
+	"settings": {
+		"phan.analyzedProjectDirectory": "D:\\projects\\ccs-lib"
+	}
+}
